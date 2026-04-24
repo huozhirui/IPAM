@@ -1,0 +1,33 @@
+# Binary
+network-plan
+*.exe
+
+# Database
+*.db
+
+# Go
+vendor/
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# Embedded dist (build artifact)
+static/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Claude
+.claude/
