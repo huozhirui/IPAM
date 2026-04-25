@@ -33,12 +33,30 @@ func InitDB(dsn string) (*gorm.DB, error) {
 
 	// 自动建表 / 迁移字段变更
 	if err := db.AutoMigrate(
+		&model.Tenant{},
 		&model.IPPool{},
 		&model.Allocation{},
 		&model.AuditLog{},
 		&model.User{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate: %w", err)
+	}
+
+	// 迁移旧的单列唯一索引（如果存在），改为复合索引由 GORM tag 自动创建
+	migrator := db.Migrator()
+	type indexMigration struct {
+		table    string
+		oldIndex string
+	}
+	oldIndexes := []indexMigration{
+		{"ip_pool", "uni_ip_pool_cidr"},
+		{"allocation", "uni_allocation_cidr"},
+		{"user", "uni_user_username"},
+	}
+	for _, m := range oldIndexes {
+		if migrator.HasIndex(m.table, m.oldIndex) {
+			_ = migrator.DropIndex(m.table, m.oldIndex)
+		}
 	}
 
 	return db, nil

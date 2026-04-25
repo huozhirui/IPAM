@@ -34,7 +34,13 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	user, err := h.userRepo.FindByUsername(req.Username)
+	// 从请求头或请求体获取租户标识
+	tenantID := c.GetHeader("X-TENANT")
+	if tenantID == "" {
+		tenantID = "default"
+	}
+
+	user, err := h.userRepo.WithTenant(tenantID).FindByUsername(req.Username)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
 		return
@@ -45,7 +51,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	token, err := h.generateToken(user.ID, user.Username, user.Role)
+	token, err := h.generateToken(user.ID, user.Username, user.Role, user.TenantID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成 token 失败"})
 		return
@@ -54,9 +60,10 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"role":     user.Role,
+			"id":        user.ID,
+			"username":  user.Username,
+			"role":      user.Role,
+			"tenant_id": user.TenantID,
 		},
 	})
 }
@@ -85,20 +92,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	tenantID := middleware.GetTenantID(c)
 	user := &model.User{
+		TenantID:     tenantID,
 		Username:     req.Username,
 		PasswordHash: string(hashedPw),
 		Role:         role,
 	}
-	if err := h.userRepo.Create(user); err != nil {
+	if err := h.userRepo.WithTenant(tenantID).Create(user); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "用户名已存在"})
 		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":       user.ID,
-		"username": user.Username,
-		"role":     user.Role,
+		"id":        user.ID,
+		"username":  user.Username,
+		"role":      user.Role,
+		"tenant_id": user.TenantID,
 	})
 }
 
@@ -118,11 +128,12 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	})
 }
 
-func (h *AuthHandler) generateToken(userID uint64, username, role string) (string, error) {
+func (h *AuthHandler) generateToken(userID uint64, username, role, tenantID string) (string, error) {
 	claims := &middleware.Claims{
 		UserID:   userID,
 		Username: username,
 		Role:     role,
+		TenantID: tenantID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

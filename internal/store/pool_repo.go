@@ -39,3 +39,8 @@ func (r *PoolRepo) GetByID(id uint64) (*model.IPPool, error) {
 func (r *PoolRepo) Delete(id uint64) error {
 	return r.db.Delete(&model.IPPool{}, id).Error
 }
+
+// WithTenant 返回按租户隔离的 PoolRepo 副本
+func (r *PoolRepo) WithTenant(tenantID string) *PoolRepo {
+	return &PoolRepo{db: r.db.Scopes(TenantScope(tenantID))}
+}

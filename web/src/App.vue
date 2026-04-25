@@ -28,8 +28,19 @@
     <a-layout>
       <a-layout-header style="background: #fff; padding: 0 24px; display: flex; justify-content: space-between; align-items: center;">
         <span style="font-size: 18px; font-weight: bold">{{ currentTitle }}</span>
-        <span>
-          {{ currentUsername }}
+        <span style="display: flex; align-items: center; gap: 12px;">
+          <span style="color: #999; font-size: 12px;">租户:</span>
+          <a-select
+            v-model:value="currentTenant"
+            style="width: 160px;"
+            size="small"
+            @change="handleTenantChange"
+          >
+            <a-select-option v-for="tid in myTenants" :key="tid" :value="tid">
+              {{ tid }}
+            </a-select-option>
+          </a-select>
+          <span>{{ currentUsername }}</span>
           <a-button type="link" @click="handleLogout">退出登录</a-button>
         </span>
       </a-layout-header>
@@ -50,6 +61,7 @@ import {
   UnorderedListOutlined,
   FileTextOutlined,
 } from '@ant-design/icons-vue'
+import { getMyTenants } from './api'
 
 const router = useRouter()
 const route = useRoute()
@@ -59,6 +71,8 @@ const selectedKeys = computed(() => [route.path])
 const currentTitle = computed(() => (route.meta?.title as string) || 'IP 网段规划管理系统')
 const isLoginPage = computed(() => route.path === '/login')
 const currentUsername = ref(localStorage.getItem('username') || '')
+const currentTenant = ref(localStorage.getItem('tenant_id') || 'default')
+const myTenants = ref<string[]>([currentTenant.value])
 
 const onMenuClick = ({ key }: { key: string }) => {
   router.push(key)
@@ -68,13 +82,38 @@ const handleLogout = () => {
   localStorage.removeItem('token')
   localStorage.removeItem('username')
   localStorage.removeItem('role')
+  localStorage.removeItem('tenant_id')
   router.push('/login')
 }
 
-// 路由变化时更新用户名和页面标题
-watch(() => route.path, () => {
+const handleTenantChange = (value: string) => {
+  const prev = localStorage.getItem('tenant_id') || 'default'
+  if (value === prev) return
+  localStorage.setItem('tenant_id', value)
+  currentTenant.value = value
+  window.location.reload()
+}
+
+const fetchMyTenants = async () => {
+  if (!localStorage.getItem('token')) return
+  try {
+    const res = await getMyTenants()
+    if (res.data && res.data.length > 0) {
+      myTenants.value = res.data
+    }
+  } catch {
+    // 获取失败时保留当前租户
+  }
+}
+
+// 路由变化时更新用户名和页面标题；进入主布局时加载租户列表
+watch(() => route.path, (path) => {
   currentUsername.value = localStorage.getItem('username') || ''
+  currentTenant.value = localStorage.getItem('tenant_id') || 'default'
   document.title = `${currentTitle.value} - IPAM`
+  if (path !== '/login') {
+    fetchMyTenants()
+  }
 }, { immediate: true })
 </script>
 

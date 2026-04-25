@@ -8,9 +8,10 @@ import (
 
 // Config 应用配置项
 type Config struct {
-	DSN       string // MySQL 连接串，格式: user:pass@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True
-	Port      string // HTTP 监听端口，默认 8080
-	JWTSecret string // JWT 签名密钥
+	DSN          string // MySQL 连接串，格式: user:pass@tcp(host:port)/dbname?charset=utf8mb4&parseTime=True
+	Port         string // HTTP 监听端口，默认 8080
+	JWTSecret    string // JWT 签名密钥
+	GatewayToken string // 网关透传模式的校验 Token，为空则不启用网关模式
 }
 
 // RegisterFlags 注册命令行参数（不调用 Parse）
@@ -18,6 +19,7 @@ func (cfg *Config) RegisterFlags(fs *flag.FlagSet) {
 	fs.StringVar(&cfg.DSN, "dsn", "", "MySQL DSN (e.g. user:pass@tcp(127.0.0.1:3306)/ipam?charset=utf8mb4&parseTime=True)")
 	fs.StringVar(&cfg.Port, "port", "8080", "HTTP listen port")
 	fs.StringVar(&cfg.JWTSecret, "jwt-secret", "change-me-in-production", "JWT signing secret")
+	fs.StringVar(&cfg.GatewayToken, "gateway-token", "", "Gateway X-TOKEN for header-based auth (empty=disable gateway mode)")
 }
 
 // ApplyEnv 环境变量覆盖默认值
@@ -30,6 +32,9 @@ func (cfg *Config) ApplyEnv() {
 	}
 	if env := os.Getenv("IPAM_JWT_SECRET"); env != "" && cfg.JWTSecret == "change-me-in-production" {
 		cfg.JWTSecret = env
+	}
+	if env := os.Getenv("IPAM_GATEWAY_TOKEN"); env != "" && cfg.GatewayToken == "" {
+		cfg.GatewayToken = env
 	}
 }
 

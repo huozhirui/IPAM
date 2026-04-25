@@ -20,7 +20,9 @@ func Setup(
 	allocRepo *store.AllocRepo,
 	auditRepo *store.AuditRepo,
 	userRepo *store.UserRepo,
+	tenantRepo *store.TenantRepo,
 	jwtSecret string,
+	gatewayToken string,
 	frontendFS fs.FS,
 ) *gin.Engine {
 	r := gin.Default()
@@ -32,16 +34,21 @@ func Setup(
 	exportH := handler.NewExportHandler(allocRepo, auditRepo)
 	dashH := handler.NewDashboardHandler(poolRepo, allocRepo)
 	authH := handler.NewAuthHandler(userRepo, jwtSecret)
+	tenantH := handler.NewTenantHandler(tenantRepo, userRepo)
 
 	// --- 公开路由（无需认证）---
 	r.POST("/api/login", authH.Login)
+	r.GET("/api/tenants", tenantH.ListAll)
 
 	// --- 需认证的 API 路由组 ---
 	api := r.Group("/api")
-	api.Use(middleware.JWTAuth(jwtSecret))
+	api.Use(middleware.JWTAuth(jwtSecret, gatewayToken))
 	{
 		// 当前用户
 		api.GET("/me", authH.Me)
+
+		// 当前用户可访问的租户列表
+		api.GET("/my-tenants", tenantH.ListMyTenants)
 
 		// 仪表盘（所有用户）
 		api.GET("/dashboard", dashH.Get)
@@ -56,6 +63,8 @@ func Setup(
 			admin.POST("/pools", poolH.Create)
 			admin.DELETE("/pools/:id", poolH.Delete)
 			admin.POST("/register", authH.Register)
+			admin.POST("/tenants", tenantH.Create)
+			admin.DELETE("/tenants/:slug", tenantH.Delete)
 		}
 
 		// 子网分配（所有用户）

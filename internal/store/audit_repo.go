@@ -43,3 +43,8 @@ func (r *AuditRepo) List(action string, page, pageSize int) ([]model.AuditLog, i
 	err := q.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&logs).Error
 	return logs, total, err
 }
+
+// WithTenant 返回按租户隔离的 AuditRepo 副本
+func (r *AuditRepo) WithTenant(tenantID string) *AuditRepo {
+	return &AuditRepo{db: r.db.Scopes(TenantScope(tenantID))}
+}

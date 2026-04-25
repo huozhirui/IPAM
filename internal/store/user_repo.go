@@ -51,3 +51,18 @@ func (r *UserRepo) UpdatePassword(username, passwordHash string) error {
 func (r *UserRepo) DeleteByUsername(username string) error {
 	return r.db.Where("username = ?", username).Delete(&model.User{}).Error
 }
+
+// WithTenant 返回按租户隔离的 UserRepo 副本
+func (r *UserRepo) WithTenant(tenantID string) *UserRepo {
+	return &UserRepo{db: r.db.Scopes(TenantScope(tenantID))}
+}
+
+// ListTenantsByUsername 查询某用户名存在于哪些租户
+func (r *UserRepo) ListTenantsByUsername(username string) ([]string, error) {
+	var tenantIDs []string
+	err := r.db.Model(&model.User{}).
+		Where("username = ?", username).
+		Distinct("tenant_id").
+		Pluck("tenant_id", &tenantIDs).Error
+	return tenantIDs, err
+}

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"network-plan/internal/middleware"
 	"network-plan/internal/store"
 
 	"github.com/gin-gonic/gin"
@@ -39,7 +40,11 @@ type RecentAlloc struct {
 // Get 获取仪表盘汇总数据
 // GET /api/dashboard
 func (h *DashboardHandler) Get(c *gin.Context) {
-	pools, err := h.poolRepo.List()
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+
+	pools, err := poolRepo.List()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -53,11 +58,11 @@ func (h *DashboardHandler) Get(c *gin.Context) {
 			continue
 		}
 		totalIPs += pr.IPCount()
-		used, _ := h.allocRepo.SumActualCountByPoolID(p.ID)
+		used, _ := allocRepo.SumActualCountByPoolID(p.ID)
 		usedIPs += used
 	}
 
-	allAllocs, _ := h.allocRepo.ListAll()
+	allAllocs, _ := allocRepo.ListAll()
 	rate := 0.0
 	if totalIPs > 0 {
 		rate = float64(usedIPs) / float64(totalIPs) * 100

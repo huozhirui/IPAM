@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"network-plan/internal/ipam"
+	"network-plan/internal/middleware"
 	"network-plan/internal/model"
 	"network-plan/internal/store"
 	"strconv"
@@ -48,13 +49,16 @@ func (h *AllocationHandler) Update(c *gin.Context) {
 		return
 	}
 
+	tenantID := middleware.GetTenantID(c)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+
 	var req UpdateAllocReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if _, err := h.allocRepo.GetByID(id); err != nil {
+	if _, err := allocRepo.GetByID(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "allocation not found"})
 		return
 	}
@@ -71,12 +75,12 @@ func (h *AllocationHandler) Update(c *gin.Context) {
 		return
 	}
 
-	if err := h.allocRepo.Update(id, fields); err != nil {
+	if err := allocRepo.Update(id, fields); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	alloc, _ := h.allocRepo.GetByID(id)
+	alloc, _ := allocRepo.GetByID(id)
 	c.JSON(http.StatusOK, alloc)
 }
 
@@ -89,17 +93,23 @@ func (h *AllocationHandler) Allocate(c *gin.Context) {
 		return
 	}
 
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+	auditRepo := h.auditRepo.WithTenant(tenantID)
+
 	if req.AllocatedBy == "" {
 		req.AllocatedBy = c.GetString("username")
 	}
-	alloc, err := h.doAllocate(req)
+	alloc, err := doAllocate(poolRepo, allocRepo, tenantID, req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	detail, _ := json.Marshal(alloc)
-	h.auditRepo.Create(&model.AuditLog{
+	auditRepo.Create(&model.AuditLog{
+		TenantID: tenantID,
 		Action:   "ALLOCATE",
 		Detail:   string(detail),
 		Operator: c.GetString("username"),
@@ -122,16 +132,21 @@ func (h *AllocationHandler) BatchAllocate(c *gin.Context) {
 		return
 	}
 
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+	auditRepo := h.auditRepo.WithTenant(tenantID)
+
 	username := c.GetString("username")
 	var results []model.Allocation
 	for i, item := range req.Items {
 		if item.AllocatedBy == "" {
 			item.AllocatedBy = username
 		}
-		alloc, err := h.doAllocate(item)
+		alloc, err := doAllocate(poolRepo, allocRepo, tenantID, item)
 		if err != nil {
 			for _, a := range results {
-				h.allocRepo.Delete(a.ID)
+				allocRepo.Delete(a.ID)
 			}
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "index": i})
 			return
@@ -141,10 +156,11 @@ func (h *AllocationHandler) BatchAllocate(c *gin.Context) {
 
 	for _, a := range results {
 		detail, _ := json.Marshal(a)
-		h.auditRepo.Create(&model.AuditLog{
+		auditRepo.Create(&model.AuditLog{
+			TenantID: tenantID,
 			Action:   "ALLOCATE",
 			Detail:   string(detail),
-			Operator: c.GetString("username"),
+			Operator: username,
 		})
 	}
 
@@ -152,8 +168,8 @@ func (h *AllocationHandler) BatchAllocate(c *gin.Context) {
 }
 
 // getPoolAllocated 获取池的 PoolRange 和已分配前缀列表（复用逻辑）
-func (h *AllocationHandler) getPoolAllocated(poolID uint64) (*model.IPPool, ipam.PoolRange, []netip.Prefix, error) {
-	pool, err := h.poolRepo.GetByID(poolID)
+func getPoolAllocated(poolRepo *store.PoolRepo, allocRepo *store.AllocRepo, poolID uint64) (*model.IPPool, ipam.PoolRange, []netip.Prefix, error) {
+	pool, err := poolRepo.GetByID(poolID)
 	if err != nil {
 		return nil, ipam.PoolRange{}, nil, fmt.Errorf("pool not found: %w", err)
 	}
@@ -163,7 +179,7 @@ func (h *AllocationHandler) getPoolAllocated(poolID uint64) (*model.IPPool, ipam
 		return nil, ipam.PoolRange{}, nil, err
 	}
 
-	existing, err := h.allocRepo.ListByPoolID(poolID)
+	existing, err := allocRepo.ListByPoolID(poolID)
 	if err != nil {
 		return nil, ipam.PoolRange{}, nil, err
 	}
@@ -179,8 +195,8 @@ func (h *AllocationHandler) getPoolAllocated(poolID uint64) (*model.IPPool, ipam
 }
 
 // doAllocate 执行单条分配的核心逻辑
-func (h *AllocationHandler) doAllocate(req AllocateReq) (*model.Allocation, error) {
-	_, pr, allocated, err := h.getPoolAllocated(req.PoolID)
+func doAllocate(poolRepo *store.PoolRepo, allocRepo *store.AllocRepo, tenantID string, req AllocateReq) (*model.Allocation, error) {
+	_, pr, allocated, err := getPoolAllocated(poolRepo, allocRepo, req.PoolID)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +209,7 @@ func (h *AllocationHandler) doAllocate(req AllocateReq) (*model.Allocation, erro
 
 	// 写入数据库
 	alloc := &model.Allocation{
+		TenantID:    tenantID,
 		PoolID:      req.PoolID,
 		CIDR:        result.String(),
 		IPCount:     req.IPCount,
@@ -200,7 +217,7 @@ func (h *AllocationHandler) doAllocate(req AllocateReq) (*model.Allocation, erro
 		Purpose:     req.Purpose,
 		AllocatedBy: req.AllocatedBy,
 	}
-	if err := h.allocRepo.Create(alloc); err != nil {
+	if err := allocRepo.Create(alloc); err != nil {
 		return nil, err
 	}
 
@@ -210,15 +227,18 @@ func (h *AllocationHandler) doAllocate(req AllocateReq) (*model.Allocation, erro
 // List 查询分配记录，支持按 pool_id 筛选
 // GET /api/allocations?pool_id=X
 func (h *AllocationHandler) List(c *gin.Context) {
+	tenantID := middleware.GetTenantID(c)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+
 	poolIDStr := c.Query("pool_id")
 
 	var allocs []model.Allocation
 	var err error
 	if poolIDStr != "" {
 		poolID, _ := strconv.ParseUint(poolIDStr, 10, 64)
-		allocs, err = h.allocRepo.ListByPoolID(poolID)
+		allocs, err = allocRepo.ListByPoolID(poolID)
 	} else {
-		allocs, err = h.allocRepo.ListAll()
+		allocs, err = allocRepo.ListAll()
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -237,19 +257,24 @@ func (h *AllocationHandler) Reclaim(c *gin.Context) {
 		return
 	}
 
-	alloc, err := h.allocRepo.GetByID(id)
+	tenantID := middleware.GetTenantID(c)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+	auditRepo := h.auditRepo.WithTenant(tenantID)
+
+	alloc, err := allocRepo.GetByID(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "allocation not found"})
 		return
 	}
 
-	if err := h.allocRepo.Delete(id); err != nil {
+	if err := allocRepo.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	detail, _ := json.Marshal(alloc)
-	h.auditRepo.Create(&model.AuditLog{
+	auditRepo.Create(&model.AuditLog{
+		TenantID: tenantID,
 		Action:   "RECLAIM",
 		Detail:   string(detail),
 		Operator: c.GetString("username"),
@@ -267,7 +292,11 @@ func (h *AllocationHandler) FreeBlocks(c *gin.Context) {
 		return
 	}
 
-	_, pr, allocated, err := h.getPoolAllocated(id)
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+
+	_, pr, allocated, err := getPoolAllocated(poolRepo, allocRepo, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -299,7 +328,11 @@ func (h *AllocationHandler) Calculate(c *gin.Context) {
 		return
 	}
 
-	_, pr, allocated, err := h.getPoolAllocated(req.PoolID)
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+
+	_, pr, allocated, err := getPoolAllocated(poolRepo, allocRepo, req.PoolID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return

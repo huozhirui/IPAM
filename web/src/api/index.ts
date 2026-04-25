@@ -6,11 +6,15 @@ const api = axios.create({
   timeout: 10000,
 })
 
-// 请求拦截器：自动附加 JWT Token
+// 请求拦截器：自动附加 JWT Token 和租户标识
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
+  }
+  const tenantId = localStorage.getItem('tenant_id')
+  if (tenantId) {
+    config.headers['X-TENANT'] = tenantId
   }
   return config
 })
@@ -23,16 +27,31 @@ api.interceptors.response.use(
       localStorage.removeItem('token')
       localStorage.removeItem('username')
       localStorage.removeItem('role')
-      window.location.href = '/login'
+      localStorage.removeItem('tenant_id')
+      // 已在登录页则不再重复跳转
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
     }
     return Promise.reject(error)
   }
 )
 
+// ---------- 租户 ----------
+
+export const getTenants = () => api.get('/tenants')
+
+export const getMyTenants = () => api.get('/my-tenants')
+
 // ---------- 认证 ----------
 
-export const login = (data: { username: string; password: string }) =>
-  api.post('/login', data)
+export const login = (data: { username: string; password: string; tenant?: string }) => {
+  const headers: Record<string, string> = {}
+  if (data.tenant) {
+    headers['X-TENANT'] = data.tenant
+  }
+  return api.post('/login', { username: data.username, password: data.password }, { headers })
+}
 
 export const register = (data: { username: string; password: string }) =>
   api.post('/register', data)

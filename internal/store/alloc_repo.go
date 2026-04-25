@@ -71,3 +71,8 @@ func (r *AllocRepo) SumActualCountByPoolID(poolID uint64) (int64, error) {
 	err := row.Scan(&sum)
 	return sum, err
 }
+
+// WithTenant 返回按租户隔离的 AllocRepo 副本
+func (r *AllocRepo) WithTenant(tenantID string) *AllocRepo {
+	return &AllocRepo{db: r.db.Scopes(TenantScope(tenantID))}
+}

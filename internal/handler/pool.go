@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"network-plan/internal/ipam"
+	"network-plan/internal/middleware"
 	"network-plan/internal/model"
 	"network-plan/internal/store"
 
@@ -44,7 +45,12 @@ func (h *PoolHandler) Create(c *gin.Context) {
 		return
 	}
 
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	auditRepo := h.auditRepo.WithTenant(tenantID)
+
 	pool := &model.IPPool{
+		TenantID:    tenantID,
 		Name:        req.Name,
 		Description: req.Description,
 	}
@@ -75,14 +81,30 @@ func (h *PoolHandler) Create(c *gin.Context) {
 		return
 	}
 
-	if err := h.poolRepo.Create(pool); err != nil {
+	// 检查与已有网段池是否存在 IP 范围重叠
+	newRange, _ := poolRangeFromModel(pool)
+	existingPools, _ := poolRepo.List()
+	for _, ep := range existingPools {
+		epRange, err := poolRangeFromModel(&ep)
+		if err != nil {
+			continue
+		}
+		// 范围重叠判定: [A.Start, A.End) 与 [B.Start, B.End) 有交集
+		if newRange.Start < epRange.End && epRange.Start < newRange.End {
+			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("IP range overlaps with existing pool '%s'", ep.CIDR)})
+			return
+		}
+	}
+
+	if err := poolRepo.Create(pool); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	detail, _ := json.Marshal(pool)
 	operator, _ := c.Get("username")
-	h.auditRepo.Create(&model.AuditLog{
+	auditRepo.Create(&model.AuditLog{
+		TenantID: tenantID,
 		Action:   "CREATE_POOL",
 		Detail:   string(detail),
 		Operator: operator.(string),
@@ -103,7 +125,11 @@ type PoolWithUsage struct {
 // List 获取所有网段池（含使用率统计）
 // GET /api/pools
 func (h *PoolHandler) List(c *gin.Context) {
-	pools, err := h.poolRepo.List()
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+
+	pools, err := poolRepo.List()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -116,8 +142,8 @@ func (h *PoolHandler) List(c *gin.Context) {
 			continue
 		}
 		totalIPs := pr.IPCount()
-		usedIPs, _ := h.allocRepo.SumActualCountByPoolID(p.ID)
-		allocCount, _ := h.allocRepo.CountByPoolID(p.ID)
+		usedIPs, _ := allocRepo.SumActualCountByPoolID(p.ID)
+		allocCount, _ := allocRepo.CountByPoolID(p.ID)
 
 		rate := 0.0
 		if totalIPs > 0 {
@@ -144,26 +170,32 @@ func (h *PoolHandler) Delete(c *gin.Context) {
 		return
 	}
 
-	count, _ := h.allocRepo.CountByPoolID(id)
+	tenantID := middleware.GetTenantID(c)
+	poolRepo := h.poolRepo.WithTenant(tenantID)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+	auditRepo := h.auditRepo.WithTenant(tenantID)
+
+	count, _ := allocRepo.CountByPoolID(id)
 	if count > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "pool has active allocations, please reclaim them first"})
 		return
 	}
 
-	pool, err := h.poolRepo.GetByID(id)
+	pool, err := poolRepo.GetByID(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "pool not found"})
 		return
 	}
 
-	if err := h.poolRepo.Delete(id); err != nil {
+	if err := poolRepo.Delete(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	detail, _ := json.Marshal(pool)
 	operator, _ := c.Get("username")
-	h.auditRepo.Create(&model.AuditLog{
+	auditRepo.Create(&model.AuditLog{
+		TenantID: tenantID,
 		Action:   "DELETE_POOL",
 		Detail:   string(detail),
 		Operator: operator.(string),

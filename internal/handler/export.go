@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"network-plan/internal/middleware"
 	"network-plan/internal/store"
 
 	"github.com/gin-gonic/gin"
@@ -29,16 +30,20 @@ func (h *ExportHandler) Export(c *gin.Context) {
 	format := c.DefaultQuery("format", "csv")
 	dataType := c.DefaultQuery("type", "allocation")
 
+	tenantID := middleware.GetTenantID(c)
+	allocRepo := h.allocRepo.WithTenant(tenantID)
+	auditRepo := h.auditRepo.WithTenant(tenantID)
+
 	switch dataType {
 	case "audit":
-		h.exportAudit(c, format)
+		h.exportAudit(c, format, auditRepo)
 	default:
-		h.exportAllocations(c, format)
+		h.exportAllocations(c, format, allocRepo)
 	}
 }
 
-func (h *ExportHandler) exportAllocations(c *gin.Context, format string) {
-	allocs, err := h.allocRepo.ListAll()
+func (h *ExportHandler) exportAllocations(c *gin.Context, format string, allocRepo *store.AllocRepo) {
+	allocs, err := allocRepo.ListAll()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -71,8 +76,8 @@ func (h *ExportHandler) exportAllocations(c *gin.Context, format string) {
 	}
 }
 
-func (h *ExportHandler) exportAudit(c *gin.Context, format string) {
-	logs, err := h.auditRepo.ListAll()
+func (h *ExportHandler) exportAudit(c *gin.Context, format string, auditRepo *store.AuditRepo) {
+	logs, err := auditRepo.ListAll()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

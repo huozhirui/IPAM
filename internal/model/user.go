@@ -11,7 +11,8 @@ const (
 // User 用户表
 type User struct {
 	ID           uint64    `json:"id" gorm:"primaryKey;autoIncrement"`
-	Username     string    `json:"username" gorm:"type:varchar(64);uniqueIndex;not null"`
+	TenantID     string    `json:"tenant_id" gorm:"type:varchar(64);not null;default:'default';uniqueIndex:idx_tenant_username;index"`
+	Username     string    `json:"username" gorm:"type:varchar(64);not null;uniqueIndex:idx_tenant_username"`
 	PasswordHash string    `json:"-" gorm:"type:varchar(255);not null"`
 	Role         string    `json:"role" gorm:"type:varchar(16);not null;default:user"`
 	CreatedAt    time.Time `json:"created_at"`

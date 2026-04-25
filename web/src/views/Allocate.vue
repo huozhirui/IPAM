@@ -1,14 +1,44 @@
 <template>
-  <!-- 分配子网：单条分配 + 批量分配 + 分配记录列表 -->
   <div>
-    <a-card title="分配子网" style="margin-bottom: 24px">
-      <a-form :label-col="{ span: 4 }" :wrapper-col="{ span: 16 }">
+    <!-- 已分配记录列表 -->
+    <a-card title="分配记录">
+      <template #extra>
+        <a-space>
+          <a-button type="primary" @click="openAllocModal">分配子网</a-button>
+          <a-button size="small" @click="handleExport('csv')">导出 CSV</a-button>
+          <a-button size="small" @click="handleExport('json')">导出 JSON</a-button>
+        </a-space>
+      </template>
+      <a-table :dataSource="allocations" :columns="allocColumns" rowKey="id" size="small">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'action'">
+            <a-space>
+              <a-button type="link" @click="openEdit(record)">编辑</a-button>
+              <a-popconfirm title="确认回收该子网？" @confirm="handleReclaim(record.id)">
+                <a-button type="link" danger>回收</a-button>
+              </a-popconfirm>
+            </a-space>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <!-- 分配子网弹窗 -->
+    <a-modal v-model:open="allocVisible" title="分配子网" :footer="null" width="640px" @afterClose="resetAllocForm">
+      <a-form :label-col="{ span: 4 }" :wrapper-col="{ span: 18 }">
         <a-form-item label="网段池" required>
           <a-select v-model:value="form.pool_id" placeholder="选择目标网段池" @change="onPoolChange">
             <a-select-option v-for="p in pools" :key="p.id" :value="p.id">
-              {{ p.name }} ({{ p.cidr }})
+              {{ p.name }} ({{ p.cidr }}) — 可用 {{ p.total_ips - p.used_ips }} / {{ p.total_ips }} IPs
             </a-select-option>
           </a-select>
+          <div v-if="selectedPool" style="margin-top: 8px; color: #666; font-size: 13px">
+            总量 {{ selectedPool.total_ips }} IPs，已用 {{ selectedPool.used_ips }} IPs，可用
+            <span :style="{ color: selectedPool.total_ips - selectedPool.used_ips > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 'bold' }">
+              {{ selectedPool.total_ips - selectedPool.used_ips }}
+            </span>
+            IPs（使用率 {{ selectedPool.usage_rate.toFixed(1) }}%）
+          </div>
         </a-form-item>
         <a-form-item label="IP 数量" required>
           <a-input-number v-model:value="form.ip_count" :min="1" :max="65536" style="width: 200px"
@@ -30,46 +60,25 @@
           </a-space>
         </a-form-item>
       </a-form>
-    </a-card>
 
-    <!-- 批量分配区域 -->
-    <a-card title="批量分配" v-if="showBatch" style="margin-bottom: 24px">
-      <div v-for="(item, idx) in batchItems" :key="idx" style="margin-bottom: 8px">
-        <a-space>
-          <span>#{{ idx + 1 }}</span>
-          <a-input-number v-model:value="item.ip_count" :min="1" placeholder="IP 数" />
-          <a-input v-model:value="item.purpose" placeholder="用途" style="width: 200px" />
-          <a-input v-model:value="item.allocated_by" placeholder="负责人（可选）" style="width: 150px" />
-          <a-button type="link" danger @click="batchItems.splice(idx, 1)">删除</a-button>
+      <!-- 批量分配区域 -->
+      <div v-if="showBatch" style="border-top: 1px solid #f0f0f0; padding-top: 16px; margin-top: 8px">
+        <h4 style="margin-bottom: 12px">批量分配</h4>
+        <div v-for="(item, idx) in batchItems" :key="idx" style="margin-bottom: 8px">
+          <a-space>
+            <span>#{{ idx + 1 }}</span>
+            <a-input-number v-model:value="item.ip_count" :min="1" placeholder="IP 数" />
+            <a-input v-model:value="item.purpose" placeholder="用途" style="width: 200px" />
+            <a-input v-model:value="item.allocated_by" placeholder="负责人（可选）" style="width: 150px" />
+            <a-button type="link" danger @click="batchItems.splice(idx, 1)">删除</a-button>
+          </a-space>
+        </div>
+        <a-space style="margin-top: 8px">
+          <a-button @click="batchItems.push({ ip_count: 0, purpose: '', allocated_by: '' })">+ 添加</a-button>
+          <a-button type="primary" @click="handleBatch" :loading="loading">统一提交</a-button>
         </a-space>
       </div>
-      <a-space style="margin-top: 8px">
-        <a-button @click="batchItems.push({ ip_count: 0, purpose: '', allocated_by: '' })">+ 添加</a-button>
-        <a-button type="primary" @click="handleBatch" :loading="loading">统一提交</a-button>
-      </a-space>
-    </a-card>
-
-    <!-- 已分配记录列表 -->
-    <a-card title="分配记录">
-      <template #extra>
-        <a-space>
-          <a-button size="small" @click="handleExport('csv')">导出 CSV</a-button>
-          <a-button size="small" @click="handleExport('json')">导出 JSON</a-button>
-        </a-space>
-      </template>
-      <a-table :dataSource="allocations" :columns="allocColumns" rowKey="id" size="small">
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'action'">
-            <a-space>
-              <a-button type="link" @click="openEdit(record)">编辑</a-button>
-              <a-popconfirm title="确认回收该子网？" @confirm="handleReclaim(record.id)">
-                <a-button type="link" danger>回收</a-button>
-              </a-popconfirm>
-            </a-space>
-          </template>
-        </template>
-      </a-table>
-    </a-card>
+    </a-modal>
 
     <!-- 编辑弹窗 -->
     <a-modal v-model:open="editVisible" title="编辑分配记录" @ok="handleEdit" :confirmLoading="editLoading">
@@ -89,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   getPools, getAllocations, allocateSubnet, batchAllocate,
@@ -101,6 +110,7 @@ const allocations = ref<any[]>([])
 const loading = ref(false)
 const showBatch = ref(false)
 const suggest = ref<any>(null)
+const allocVisible = ref(false)
 
 const form = ref({
   pool_id: undefined as number | undefined,
@@ -124,8 +134,15 @@ const formatTime = (val: string) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
+const poolNameMap = computed(() => {
+  const map: Record<number, string> = {}
+  pools.value.forEach((p: any) => { map[p.id] = `${p.name} (${p.cidr})` })
+  return map
+})
+
 const allocColumns = [
   { title: 'CIDR', dataIndex: 'cidr', key: 'cidr' },
+  { title: '所属网段池', dataIndex: 'pool_id', key: 'pool_id', customRender: ({ text }: any) => poolNameMap.value[text] || text },
   { title: '申请 IP', dataIndex: 'ip_count', key: 'ip_count' },
   { title: '实际 IP', dataIndex: 'actual_count', key: 'actual_count' },
   { title: '用途', dataIndex: 'purpose', key: 'purpose' },
@@ -139,15 +156,29 @@ const fetchPools = async () => {
   pools.value = res.data || []
 }
 
+const selectedPool = computed(() => {
+  return pools.value.find((p: any) => p.id === form.value.pool_id) || null
+})
+
 const fetchAllocations = async () => {
-  const res = await getAllocations(form.value.pool_id)
+  const res = await getAllocations()
   allocations.value = res.data || []
 }
 
-// 切换网段池时刷新分配列表和预计算
+// 切换网段池时刷新预计算
 const onPoolChange = () => {
-  fetchAllocations()
   onCalc()
+}
+
+const openAllocModal = () => {
+  allocVisible.value = true
+}
+
+const resetAllocForm = () => {
+  form.value = { pool_id: undefined, ip_count: undefined, purpose: '', allocated_by: '' }
+  suggest.value = null
+  showBatch.value = false
+  batchItems.value = []
 }
 
 // 输入 IP 数量后实时预计算
@@ -172,9 +203,8 @@ const handleAllocate = async () => {
   try {
     await allocateSubnet(form.value as any)
     message.success('分配成功')
-    form.value.ip_count = undefined
-    form.value.purpose = ''
-    suggest.value = null
+    allocVisible.value = false
+    await fetchPools()
     await fetchAllocations()
   } catch (e: any) {
     message.error(e.response?.data?.error || '分配失败')
@@ -204,7 +234,8 @@ const handleBatch = async () => {
     }))
     await batchAllocate(items)
     message.success(`成功分配 ${items.length} 条子网`)
-    batchItems.value = []
+    allocVisible.value = false
+    await fetchPools()
     await fetchAllocations()
   } catch (e: any) {
     message.error(e.response?.data?.error || '批量分配失败')
@@ -256,6 +287,7 @@ const handleReclaim = async (id: number) => {
   try {
     await reclaimAllocation(id)
     message.success('回收成功')
+    await fetchPools()
     await fetchAllocations()
   } catch (e: any) {
     message.error(e.response?.data?.error || '回收失败')
@@ -265,10 +297,5 @@ const handleReclaim = async (id: number) => {
 onMounted(async () => {
   await fetchPools()
   await fetchAllocations()
-})
-
-// 监听网段池选择变化
-watch(() => form.value.pool_id, () => {
-  if (form.value.pool_id) fetchAllocations()
 })
 </script>

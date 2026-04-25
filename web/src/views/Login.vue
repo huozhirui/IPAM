@@ -2,6 +2,18 @@
   <div class="login-wrapper">
     <a-card title="IP 网段规划管理系统" style="width: 400px">
       <a-form :label-col="{ span: 6 }" :wrapper-col="{ span: 16 }">
+        <a-form-item label="租户">
+          <a-select
+            v-model:value="form.tenant"
+            placeholder="选择租户"
+            :loading="tenantsLoading"
+            show-search
+          >
+            <a-select-option v-for="t in tenantList" :key="t.slug" :value="t.slug">
+              {{ t.name }} ({{ t.slug }})
+            </a-select-option>
+          </a-select>
+        </a-form-item>
         <a-form-item label="用户名">
           <a-input v-model:value="form.username" placeholder="请输入用户名" @pressEnter="handleLogin" />
         </a-form-item>
@@ -17,17 +29,36 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
-import { login } from '../api'
+import { login, getTenants } from '../api'
 
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
+const tenantsLoading = ref(false)
+const tenantList = ref<{ id: number; name: string; slug: string }[]>([])
 
 const form = ref({
+  tenant: 'default',
   username: '',
   password: '',
+})
+
+onMounted(async () => {
+  if (route.query.tenant) {
+    form.value.tenant = route.query.tenant as string
+  }
+  tenantsLoading.value = true
+  try {
+    const res = await getTenants()
+    tenantList.value = res.data
+  } catch {
+    // 获取租户列表失败时保留手动输入的默认值
+  } finally {
+    tenantsLoading.value = false
+  }
 })
 
 const handleLogin = async () => {
@@ -41,6 +72,7 @@ const handleLogin = async () => {
     localStorage.setItem('token', res.data.token)
     localStorage.setItem('username', res.data.user.username)
     localStorage.setItem('role', res.data.user.role)
+    localStorage.setItem('tenant_id', res.data.user.tenant_id || 'default')
     message.success('登录成功')
     router.push('/')
   } catch (e: any) {
