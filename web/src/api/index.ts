@@ -84,13 +84,21 @@ export const deletePool = (id: number) => api.delete(`/pools/${id}`)
 
 export interface AllocateReq {
   pool_id: number
-  ip_count: number
+  ip_count?: number
+  cidr?: string
   purpose: string
   allocated_by?: string
 }
 
-export const getAllocations = (poolId?: number) =>
-  api.get('/allocations', { params: poolId ? { pool_id: poolId } : {} })
+export interface AllocSearchParams {
+  pool_id?: number
+  cidr?: string
+  purpose?: string
+  allocated_by?: string
+}
+
+export const getAllocations = (params?: AllocSearchParams) =>
+  api.get('/allocations', { params: params || {} })
 
 export const allocateSubnet = (data: AllocateReq) =>
   api.post('/allocations', data)

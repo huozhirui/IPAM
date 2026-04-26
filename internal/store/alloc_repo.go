@@ -72,6 +72,27 @@ func (r *AllocRepo) SumActualCountByPoolID(poolID uint64) (int64, error) {
 	return sum, err
 }
 
+// Search 按条件搜索分配记录
+// poolID > 0 时按池过滤；cidr/purpose 非空时模糊搜索；allocatedBy 非空时精确匹配
+func (r *AllocRepo) Search(poolID uint64, cidr, purpose, allocatedBy string) ([]model.Allocation, error) {
+	q := r.db.Model(&model.Allocation{})
+	if poolID > 0 {
+		q = q.Where("pool_id = ?", poolID)
+	}
+	if cidr != "" {
+		q = q.Where("cidr LIKE ?", "%"+cidr+"%")
+	}
+	if purpose != "" {
+		q = q.Where("purpose LIKE ?", "%"+purpose+"%")
+	}
+	if allocatedBy != "" {
+		q = q.Where("allocated_by = ?", allocatedBy)
+	}
+	var allocs []model.Allocation
+	err := q.Order("allocated_at DESC").Find(&allocs).Error
+	return allocs, err
+}
+
 // WithTenant 返回按租户隔离的 AllocRepo 副本
 func (r *AllocRepo) WithTenant(tenantID string) *AllocRepo {
 	return &AllocRepo{db: r.db.Scopes(TenantScope(tenantID))}

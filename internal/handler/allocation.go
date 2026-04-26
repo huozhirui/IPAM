@@ -27,9 +27,13 @@ func NewAllocationHandler(pr *store.PoolRepo, ar *store.AllocRepo, aur *store.Au
 }
 
 // AllocateReq 单条分配请求体
+// 支持两种模式：
+//   1. 按数量分配：指定 ip_count，系统自动选择最佳 CIDR
+//   2. 按 CIDR 分配：指定 cidr，系统验证后直接分配指定网段
 type AllocateReq struct {
 	PoolID      uint64 `json:"pool_id" binding:"required"`  // 目标网段池 ID
-	IPCount     int    `json:"ip_count" binding:"required"`  // 需要的 IP 数量
+	IPCount     int    `json:"ip_count"`                     // 需要的 IP 数量（按数量模式）
+	CIDR        string `json:"cidr"`                         // 指定 CIDR 地址（按 CIDR 模式）
 	Purpose     string `json:"purpose" binding:"required"`   // 用途标签
 	AllocatedBy string `json:"allocated_by"`                 // 负责人
 }
@@ -98,10 +102,22 @@ func (h *AllocationHandler) Allocate(c *gin.Context) {
 	allocRepo := h.allocRepo.WithTenant(tenantID)
 	auditRepo := h.auditRepo.WithTenant(tenantID)
 
+	if req.IPCount == 0 && req.CIDR == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ip_count or cidr is required"})
+		return
+	}
+
 	if req.AllocatedBy == "" {
 		req.AllocatedBy = c.GetString("username")
 	}
-	alloc, err := doAllocate(poolRepo, allocRepo, tenantID, req)
+
+	var alloc *model.Allocation
+	var err error
+	if req.CIDR != "" {
+		alloc, err = doAllocateByCIDR(poolRepo, allocRepo, tenantID, req)
+	} else {
+		alloc, err = doAllocate(poolRepo, allocRepo, tenantID, req)
+	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -123,7 +139,15 @@ type BatchAllocateReq struct {
 	Items []AllocateReq `json:"items" binding:"required,min=1"`
 }
 
-// BatchAllocate 批量分配子网（逐条分配，任一失败则全部回滚）
+// BatchItemResult 批量分配逐条结果
+type BatchItemResult struct {
+	Index   int               `json:"index"`
+	Success bool              `json:"success"`
+	Error   string            `json:"error,omitempty"`
+	Alloc   *model.Allocation `json:"allocation,omitempty"`
+}
+
+// BatchAllocate 批量分配子网（逐条处理，返回每条结果）
 // POST /api/allocations/batch
 func (h *AllocationHandler) BatchAllocate(c *gin.Context) {
 	var req BatchAllocateReq
@@ -138,33 +162,49 @@ func (h *AllocationHandler) BatchAllocate(c *gin.Context) {
 	auditRepo := h.auditRepo.WithTenant(tenantID)
 
 	username := c.GetString("username")
-	var results []model.Allocation
+	results := make([]BatchItemResult, len(req.Items))
+	successCount := 0
+
 	for i, item := range req.Items {
 		if item.AllocatedBy == "" {
 			item.AllocatedBy = username
 		}
-		alloc, err := doAllocate(poolRepo, allocRepo, tenantID, item)
-		if err != nil {
-			for _, a := range results {
-				allocRepo.Delete(a.ID)
-			}
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "index": i})
-			return
+
+		if item.IPCount == 0 && item.CIDR == "" {
+			results[i] = BatchItemResult{Index: i, Success: false, Error: "ip_count or cidr is required"}
+			continue
 		}
-		results = append(results, *alloc)
+
+		var alloc *model.Allocation
+		var err error
+		if item.CIDR != "" {
+			alloc, err = doAllocateByCIDR(poolRepo, allocRepo, tenantID, item)
+		} else {
+			alloc, err = doAllocate(poolRepo, allocRepo, tenantID, item)
+		}
+
+		if err != nil {
+			results[i] = BatchItemResult{Index: i, Success: false, Error: err.Error()}
+		} else {
+			results[i] = BatchItemResult{Index: i, Success: true, Alloc: alloc}
+			successCount++
+
+			detail, _ := json.Marshal(alloc)
+			auditRepo.Create(&model.AuditLog{
+				TenantID: tenantID,
+				Action:   "ALLOCATE",
+				Detail:   string(detail),
+				Operator: username,
+			})
+		}
 	}
 
-	for _, a := range results {
-		detail, _ := json.Marshal(a)
-		auditRepo.Create(&model.AuditLog{
-			TenantID: tenantID,
-			Action:   "ALLOCATE",
-			Detail:   string(detail),
-			Operator: username,
-		})
-	}
-
-	c.JSON(http.StatusOK, results)
+	c.JSON(http.StatusOK, gin.H{
+		"results":       results,
+		"total":         len(req.Items),
+		"success_count": successCount,
+		"fail_count":    len(req.Items) - successCount,
+	})
 }
 
 // getPoolAllocated 获取池的 PoolRange 和已分配前缀列表（复用逻辑）
@@ -224,19 +264,90 @@ func doAllocate(poolRepo *store.PoolRepo, allocRepo *store.AllocRepo, tenantID s
 	return alloc, nil
 }
 
-// List 查询分配记录，支持按 pool_id 筛选
-// GET /api/allocations?pool_id=X
+// doAllocateByCIDR 按指定 CIDR 地址分配子网
+func doAllocateByCIDR(poolRepo *store.PoolRepo, allocRepo *store.AllocRepo, tenantID string, req AllocateReq) (*model.Allocation, error) {
+	// 验证 CIDR 格式
+	if err := ipam.ValidateCIDR(req.CIDR); err != nil {
+		return nil, err
+	}
+
+	prefix, err := ipam.ParseCIDR(req.CIDR)
+	if err != nil {
+		return nil, err
+	}
+
+	pool, _, allocated, err := getPoolAllocated(poolRepo, allocRepo, req.PoolID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 验证 CIDR 在池范围内
+	if pool.CIDR != "" {
+		if err := ipam.ValidateSubnetInPool(pool.CIDR, req.CIDR); err != nil {
+			return nil, err
+		}
+	} else {
+		// IP 范围模式的池，手动检查
+		pr, err := poolRangeFromModel(pool)
+		if err != nil {
+			return nil, err
+		}
+		s, e := ipam.AddrToUint32(prefix.Addr()), ipam.AddrToUint32(prefix.Addr())+uint32(ipam.PrefixIPCount(prefix))
+		if s < pr.Start || e > pr.End {
+			return nil, fmt.Errorf("CIDR %s is not within pool range %s - %s", req.CIDR, ipam.Uint32ToAddr(pr.Start), ipam.Uint32ToAddr(pr.End-1))
+		}
+	}
+
+	// 检查与已有分配的冲突
+	var existingCIDRs []string
+	for _, a := range allocated {
+		existingCIDRs = append(existingCIDRs, a.String())
+	}
+	if err := ipam.CheckConflict(req.CIDR, existingCIDRs); err != nil {
+		return nil, err
+	}
+
+	actualIPs := int(ipam.PrefixIPCount(prefix))
+
+	alloc := &model.Allocation{
+		TenantID:    tenantID,
+		PoolID:      req.PoolID,
+		CIDR:        prefix.String(),
+		IPCount:     actualIPs,
+		ActualCount: actualIPs,
+		Purpose:     req.Purpose,
+		AllocatedBy: req.AllocatedBy,
+	}
+	if err := allocRepo.Create(alloc); err != nil {
+		return nil, err
+	}
+
+	return alloc, nil
+}
+
+// List 查询分配记录，支持多条件搜索
+// GET /api/allocations?pool_id=X&cidr=10.0&purpose=prod&allocated_by=alice
 func (h *AllocationHandler) List(c *gin.Context) {
 	tenantID := middleware.GetTenantID(c)
 	allocRepo := h.allocRepo.WithTenant(tenantID)
 
 	poolIDStr := c.Query("pool_id")
+	cidr := c.Query("cidr")
+	purpose := c.Query("purpose")
+	allocatedBy := c.Query("allocated_by")
+
+	var poolID uint64
+	if poolIDStr != "" {
+		poolID, _ = strconv.ParseUint(poolIDStr, 10, 64)
+	}
+
+	// 有任意搜索条件时走 Search，否则走 ListAll
+	hasFilter := poolID > 0 || cidr != "" || purpose != "" || allocatedBy != ""
 
 	var allocs []model.Allocation
 	var err error
-	if poolIDStr != "" {
-		poolID, _ := strconv.ParseUint(poolIDStr, 10, 64)
-		allocs, err = allocRepo.ListByPoolID(poolID)
+	if hasFilter {
+		allocs, err = allocRepo.Search(poolID, cidr, purpose, allocatedBy)
 	} else {
 		allocs, err = allocRepo.ListAll()
 	}
