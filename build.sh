@@ -12,6 +12,6 @@ rm -rf static/dist
 cp -r web/dist static/dist
 
 echo "==> Building backend..."
-go build -o network-plan ./cmd/main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o network-plan ./cmd/main.go
 
 echo "==> Done: ./network-plan"

@@ -12,7 +12,7 @@ build-frontend:
 
 # 编译 Go 后端（自动嵌入 static/dist 前端资源）
 build-backend:
-	go build -o network-plan ./cmd/main.go
+	CGO_ENABLED=0 go build -o network-plan ./cmd/main.go
 
 # 开发模式：仅启动后端（前端另开 npm run dev）
 dev:
